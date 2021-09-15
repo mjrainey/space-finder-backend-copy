@@ -1,113 +1,112 @@
-import { CfnOutput } from "aws-cdk-lib";
+// import { Construct } from "constructs";
+import { CfnOutput, Stack } from "aws-cdk-lib";
 import { UserPool, UserPoolClient, CfnIdentityPool, CfnIdentityPoolRoleAttachment } from "aws-cdk-lib/lib/aws-cognito";
-import { FederatedPrincipal, Role } from "aws-cdk-lib/lib/aws-iam";
-import { Construct } from "constructs";
-import { Policies } from "../Policies";
-
-
-
+import { Effect, FederatedPrincipal, PolicyStatement, Role } from "aws-cdk-lib/lib/aws-iam";
+import { Bucket } from "aws-cdk-lib/lib/aws-s3";
 
 export class IdentityPoolWrapper {
-
-    private scope: Construct;
+    private stack: Stack;
     private userPool: UserPool;
     private userPoolClient: UserPoolClient;
-    private policies: Policies;
 
     private identityPool: CfnIdentityPool;
     private authenticatedRole: Role;
     private unAuthenticatedRole: Role;
     public adminRole: Role;
+    private bucketPolicyStatements: PolicyStatement[];
 
-    constructor(scope: Construct, userPool: UserPool, userPoolClient: UserPoolClient, policies: Policies) {
-        this.scope = scope;
+    constructor(stack: Stack, userPool: UserPool, userPoolClient: UserPoolClient, buckets: Bucket[]) {
+        this.stack = stack;
         this.userPool = userPool;
         this.userPoolClient = userPoolClient;
-        this.policies = policies;
-        this.initialize();
-    }
 
-    private initialize() {
-        this.initializeIdentityPool();
-        this.initializeRoles();
+        this.bucketPolicyStatements = buckets.map((bucket) => {
+            return this.createBucketPolicyStatement(bucket);
+        });
+
+        this.createIdentityPool();
+        this.createRoles();
         this.attachRoles();
     }
 
-    private initializeIdentityPool() {
-        this.identityPool = new CfnIdentityPool(this.scope, 'SpaceFinderIdentityPool', {
+    private createIdentityPool() {
+        this.identityPool = new CfnIdentityPool(this.stack, "SpaceFinderIdentityPool", {
             allowUnauthenticatedIdentities: true,
             cognitoIdentityProviders: [{
                 clientId: this.userPoolClient.userPoolClientId,
                 providerName: this.userPool.userPoolProviderName
             }]
         });
-        new CfnOutput(this.scope, 'IdentityPoolId', {
+
+        new CfnOutput(this.stack, "IdentityPoolId", {
             value: this.identityPool.ref
-        })
+        });
     }
 
-    private initializeRoles() {
-        this.authenticatedRole = new Role(this.scope, 'CognitoDefaultAuthenticatedRole', {
-            assumedBy: new FederatedPrincipal('cognito-identity.amazonaws.com', {
+    private createRoles() {
+        this.authenticatedRole = new Role(this.stack, "CognitoDefaultAuthenticatedRole", {
+            assumedBy: new FederatedPrincipal("cognito-identity.amazonaws.com", {
                 StringEquals: {
-                    'cognito-identity.amazonaws.com:aud': this.identityPool.ref
+                    "cognito-identity.amazonaws.com:aud": this.identityPool.ref
                 },
-                'ForAnyValue:StringLike': {
-                    'cognito-identity.amazonaws.com:amr': 'authenticated'
+                "ForAnyValue:StringLike": {
+                    "cognito-identity.amazonaws.com:amr": "authenticated"
                 }
-            },
-                'sts:AssumeRoleWithWebIdentity'
-            )
+            }, "sts:AssumeRoleWithWebIdentity")
         });
-        this.authenticatedRole.addToPolicy(this.policies.uploadProfilePhoto);
+        this.authenticatedRole.addToPolicy(this.bucketPolicyStatements[1]);
 
-        this.unAuthenticatedRole = new Role(this.scope, 'CognitoDefaultUnAuthenticatedRole', {
-            assumedBy: new FederatedPrincipal('cognito-identity.amazonaws.com', {
+        this.unAuthenticatedRole = new Role(this.stack, "CognitoDefaultUnAuthenticatedRole", {
+            assumedBy: new FederatedPrincipal("cognito-identity.amazonaws.com", {
                 StringEquals: {
-                    'cognito-identity.amazonaws.com:aud': this.identityPool.ref
+                    "cognito-identity.amazonaws.com:aud": this.identityPool.ref
                 },
-                'ForAnyValue:StringLike': {
-                    'cognito-identity.amazonaws.com:amr': 'unauthenticated'
+                "ForAnyValue:StringLike": {
+                    "cognito-identity.amazonaws.com:amr": "unauthenticated"
                 }
-            },
-                'sts:AssumeRoleWithWebIdentity'
-            )
+            }, "sts:AssumeRoleWithWebIdentity")
         });
 
-        this.adminRole = new Role(this.scope, 'CognitoAdminRole', {
-            assumedBy: new FederatedPrincipal('cognito-identity.amazonaws.com', {
+        this.adminRole = new Role(this.stack, "CognitoAdminRole", {
+            assumedBy: new FederatedPrincipal("cognito-identity.amazonaws.com", {
                 StringEquals: {
-                    'cognito-identity.amazonaws.com:aud': this.identityPool.ref
+                    "cognito-identity.amazonaws.com:aud": this.identityPool.ref
                 },
-                'ForAnyValue:StringLike': {
-                    'cognito-identity.amazonaws.com:amr': 'authenticated'
+                "ForAnyValue:StringLike": {
+                    "cognito-identity.amazonaws.com:amr": "authenticated"
                 }
-            },
-                'sts:AssumeRoleWithWebIdentity'
-            )
+            }, "sts:AssumeRoleWithWebIdentity")
         });
 
-        this.adminRole.addToPolicy(this.policies.uploadSpacePhotos);
-        this.adminRole.addToPolicy(this.policies.uploadProfilePhoto);
-    
+        this.adminRole.addToPolicy(this.bucketPolicyStatements[0]);
+        this.adminRole.addToPolicy(this.bucketPolicyStatements[1]);
     }
 
-    private attachRoles(){
-        new CfnIdentityPoolRoleAttachment(this.scope, 'RolesAttachment', {
+    private attachRoles() {
+        new CfnIdentityPoolRoleAttachment(this.stack, "RolesAttachment", {
             identityPoolId: this.identityPool.ref,
             roles: {
-                'authenticated': this.authenticatedRole.roleArn,
-                'unauthenticated': this.unAuthenticatedRole.roleArn
+                "authenticated": this.authenticatedRole.roleArn,
+                "unauthenticated": this.unAuthenticatedRole.roleArn
             },
             roleMappings: {
                 adminsMapping: {
-                    type: 'Token',
-                    ambiguousRoleResolution: 'AuthenticatedRole',
+                    type: "Token",
+                    ambiguousRoleResolution: "AuthenticatedRole",
                     identityProvider: `${this.userPool.userPoolProviderName}:${this.userPoolClient.userPoolClientId}`
                 }
             }
-        })
+        });
     }
 
-
+    private createBucketPolicyStatement(bucket: Bucket): PolicyStatement {
+        return new PolicyStatement({
+            effect: Effect.ALLOW,
+            actions: [
+                "s3:PutObject",
+                "s3:PutObjectAcl"
+            ],
+            resources: [bucket.bucketArn + "/*"]
+        });
+    }
 }

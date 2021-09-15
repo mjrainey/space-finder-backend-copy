@@ -18,18 +18,18 @@ export class Policies {
         this.uploadSpacePhotos = new PolicyStatement({
             effect: Effect.ALLOW,
             actions: [
-                's3:PutObject',
-                's3:PutObjectAcl'
+                "s3:PutObject",
+                "s3:PutObjectAcl"
             ],
-            resources: [this.spacesPhotosBucket.bucketArn + '/*']
+            resources: [this.spacesPhotosBucket.bucketArn + "/*"]
         });
         this.uploadProfilePhoto = new PolicyStatement({
             effect: Effect.ALLOW,
             actions: [
-                's3:PutObject',
-                's3:PutObjectAcl'
+                "s3:PutObject",
+                "s3:PutObjectAcl"
             ],
-            resources: [this.profilePhotosBucket.bucketArn + '/*']
+            resources: [this.profilePhotosBucket.bucketArn + "/*"]
         });
     }
 }

@@ -1,124 +1,59 @@
-import { CfnOutput, Fn, Stack, StackProps } from 'aws-cdk-lib';
-import { Construct } from 'constructs';
-import { AuthorizationType, Cors, MethodOptions, ResourceOptions, RestApi } from 'aws-cdk-lib/lib/aws-apigateway'
-import { GenericTable } from './GenericTable';
-import { AuthorizerWrapper } from './auth/AuthorizerWrapper';
-import { Bucket, HttpMethods } from 'aws-cdk-lib/lib/aws-s3';
-import { WebAppDeployment } from './WebAppDeployment';
-import { Policies } from './Policies';
+import { Construct } from "constructs";
+import { CfnOutput, Fn, Stack, StackProps } from "aws-cdk-lib";
+import { RestApi } from "aws-cdk-lib/lib/aws-apigateway"
+import { Bucket, HttpMethods } from "aws-cdk-lib/lib/aws-s3";
+import { AuthorizerWrapper } from "./auth/AuthorizerWrapper";
+import { GenericTable, GenericTableProps  } from "./GenericTable";
+import { WebAppDeployment } from "./WebAppDeployment";
 
 export class SpaceStack extends Stack {
+    private stackSuffix: string;
 
-    private api = new RestApi(this, 'SpaceApi');
-    private authorizer: AuthorizerWrapper;
-    private suffix: string;
-    private spacesPhotosBucket: Bucket;
-    private profilePhotosBucket: Bucket;
-    private policies: Policies;
+    constructor(scope: Construct, id: string, props: StackProps, tableProps: GenericTableProps[]) {
+        super(scope, id, props);
 
-    private spacesTable = new GenericTable(this, {
-        tableName: 'SpacesTable',
-        primaryKey: 'spaceId',
-        createLambdaPath: 'Create',
-        readLambdaPath: 'Read',
-        updateLambdaPath: 'Update',
-        deleteLambdaPath: 'Delete',
-        secondaryIndexes: ['location']
-    })
+        this.stackSuffix = this.createStackSuffix();
 
-    private reservationsTable = new GenericTable(this, {
-        tableName: 'ReservationsTable',
-        primaryKey: 'reservationId',
-        createLambdaPath: 'Create',
-        readLambdaPath: 'Read',
-        updateLambdaPath: 'Update',
-        deleteLambdaPath: 'Delete',
-        secondaryIndexes: ['user']
-    })
+        const api = new RestApi(this, "SpaceApi");
+        // const api = new RestApi(this, `${props.stackName}API`);
 
-    constructor(scope: Construct, id: string, props: StackProps) {
-        super(scope, id, props)
+        const bucketNames: string[] = ["spaces-photos", "profile-photos"];
+        const buckets = bucketNames.map(name => this.createBucket(name));
 
-        this.initializeSuffix();
-        this.initializeSpacesPhotosBucket();
-        this.initializeProfilePhotosBucket();
-        this.policies = new Policies(this.spacesPhotosBucket, this.profilePhotosBucket);
-        this.authorizer = new AuthorizerWrapper(
-            this,
-            this.api,
-            this.policies);
-        new WebAppDeployment(this, this.suffix);
+        const authWrapper = new AuthorizerWrapper(this, buckets);
+        authWrapper.authorizer._attachToApi(api);
 
+        tableProps.forEach(properties => {
+            new GenericTable(this, api, authWrapper.authorizer, properties);
+        });
 
-        const optionsWithAuthorizer: MethodOptions = {
-            authorizationType: AuthorizationType.COGNITO,
-            authorizer: {
-                authorizerId: this.authorizer.authorizer.authorizerId
-            }
-        }
-        const optionsWithCors:ResourceOptions = {
-            defaultCorsPreflightOptions : {
-                allowOrigins: Cors.ALL_ORIGINS,
-                allowMethods: Cors.ALL_METHODS
-            }
-        }
-
-        //Spaces API integrations:
-        const spaceResource = this.api.root.addResource('spaces', optionsWithCors);
-        spaceResource.addMethod('POST', this.spacesTable.createLambdaIntegration, optionsWithAuthorizer);
-        spaceResource.addMethod('GET', this.spacesTable.readLambdaIntegration, optionsWithAuthorizer);
-        spaceResource.addMethod('PUT', this.spacesTable.updateLambdaIntegration, optionsWithAuthorizer);
-        spaceResource.addMethod('DELETE', this.spacesTable.deleteLambdaIntegration, optionsWithAuthorizer);
-
-        //Reservations API integrations:
-        const reservationResource = this.api.root.addResource('reservations', optionsWithCors);
-        reservationResource.addMethod('POST', this.reservationsTable.createLambdaIntegration, optionsWithAuthorizer);
-        reservationResource.addMethod('GET', this.reservationsTable.readLambdaIntegration, optionsWithAuthorizer);
-        reservationResource.addMethod('PUT', this.reservationsTable.updateLambdaIntegration, optionsWithAuthorizer);
-        reservationResource.addMethod('DELETE', this.reservationsTable.deleteLambdaIntegration, optionsWithAuthorizer);
+        new WebAppDeployment(this, this.stackSuffix);
     }
 
-    private initializeSuffix() {
-        const shortStackId = Fn.select(2, Fn.split('/', this.stackId));
-        const Suffix = Fn.select(4, Fn.split('-', shortStackId));
-        this.suffix = Suffix;
+    private createStackSuffix(): string {
+        const shortStackId = Fn.select(2, Fn.split("/", this.stackId));
+        const shortStackSuffix = Fn.select(4, Fn.split("-", shortStackId));
+        return shortStackSuffix;
     }
-    private initializeSpacesPhotosBucket() {
-        this.spacesPhotosBucket = new Bucket(this, 'spaces-photos', {
-            bucketName: 'spaces-photos-' + this.suffix,
+
+    private createBucket(name: string): Bucket {
+        const bucket = new Bucket(this, name, {
+            bucketName: `${name}-${this.stackSuffix}`,
             cors: [{
                 allowedMethods: [
                     HttpMethods.HEAD,
                     HttpMethods.GET,
                     HttpMethods.PUT
                 ],
-                allowedOrigins: ['*'],
-                allowedHeaders: ['*']
+                allowedOrigins: ["*"],
+                allowedHeaders: ["*"]
             }]
         });
-        new CfnOutput(this, 'spaces-photos-bucket-name', {
-            value: this.spacesPhotosBucket.bucketName
-        })
-    }
 
-    private initializeProfilePhotosBucket() {
-        this.profilePhotosBucket = new Bucket(this, 'profile-photos', {
-            bucketName: 'profile-photos-' + this.suffix,
-            cors: [{
-                allowedMethods: [
-                    HttpMethods.HEAD,
-                    HttpMethods.GET,
-                    HttpMethods.PUT
-                ],
-                allowedOrigins: ['*'],
-                allowedHeaders: ['*']
-            }]
+        new CfnOutput(this, `${name}-bucket-name`, {
+            value: bucket.bucketName
         });
-        new CfnOutput(this, 'profile-photos-bucket-name', {
-            value: this.profilePhotosBucket.bucketName
-        })
+
+        return bucket;
     }
-
-
-
 }

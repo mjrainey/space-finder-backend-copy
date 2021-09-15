@@ -1,54 +1,54 @@
-import { CfnOutput } from "aws-cdk-lib";
+import { CfnOutput, Stack } from "aws-cdk-lib";
 import { CognitoUserPoolsAuthorizer, RestApi } from "aws-cdk-lib/lib/aws-apigateway";
 import { UserPool, UserPoolClient, CfnUserPoolGroup } from "aws-cdk-lib/lib/aws-cognito";
-import { Construct } from "constructs";
-import { Policies } from "../Policies";
+import { Bucket } from "aws-cdk-lib/lib/aws-s3";
 import { IdentityPoolWrapper } from './IdentityPoolWrapper';
 
 
 export class AuthorizerWrapper {
-
-    private scope: Construct;
-    private api: RestApi;
-    private policies: Policies;
+    private stack: Stack;
+    private buckets: Bucket[];
+    private objectPrefix: string;
 
     private userPool: UserPool;
     private userPoolClient: UserPoolClient;
     public authorizer: CognitoUserPoolsAuthorizer;
     private identityPoolWrapper: IdentityPoolWrapper;
 
-    constructor(scope: Construct, api: RestApi, policies: Policies){
-        this.scope = scope;
-        this.api = api;
-        this.policies = policies;
-        this.initialize();
-    }
+    constructor(stack: Stack, buckets: Bucket[]){
+        this.stack = stack;
+        this.buckets = buckets;
 
-    private initialize(){
+        this.objectPrefix = "Space";
+        // this.objectPrefix = stack.stackName;
+
         this.createUserPool();
-        this.addUserPoolClient();
+        this.createUserPoolClient();
         this.createAuthorizer();
-        this.initializeIdentityPoolWrapper();
-        this.createAdminsGroup();        
+        this.createIdentityPoolWrapper();
+        this.createAdminGroup();
     }
 
-    private createUserPool(){
-        this.userPool = new UserPool(this.scope, 'SpaceUserPool', {
-            userPoolName: 'SpaceUserPool',
+    private createUserPool() {
+        const userPoolName = `${this.objectPrefix}UserPool`;
+        this.userPool = new UserPool(this.stack, userPoolName, {
+            userPoolName: userPoolName,
             selfSignUpEnabled: true,
             signInAliases: {
                 username: true,
                 email: true
             }
         });
-        new CfnOutput(this.scope, 'UserPoolId', {
+
+        new CfnOutput(this.stack, 'UserPoolId', {
             value: this.userPool.userPoolId
-        })
+        });
     }
 
-    private addUserPoolClient(){
-        this.userPoolClient = this.userPool.addClient('SpaceUserPool-client', {
-            userPoolClientName: 'SpaceUserPool-client',
+    private createUserPoolClient() {
+        const userPoolClientName = `${this.objectPrefix}UserPool-client`;
+        this.userPoolClient = this.userPool.addClient(userPoolClientName, {
+            userPoolClientName: userPoolClientName,
             authFlows: {
                 adminUserPassword: true,
                 custom: true,
@@ -57,34 +57,38 @@ export class AuthorizerWrapper {
             },
             generateSecret: false
         });
-        new CfnOutput(this.scope, 'UserPoolClientId', {
+
+        new CfnOutput(this.stack, 'UserPoolClientId', {
             value: this.userPoolClient.userPoolClientId
-        })
+        });
     }
 
-    private createAuthorizer(){
-        this.authorizer = new CognitoUserPoolsAuthorizer(this.scope, 'SpaceUserAuthorizer', {
+    private createAuthorizer() {
+        const authorizerName = `${this.objectPrefix}UserAuthorizer`;
+        this.authorizer = new CognitoUserPoolsAuthorizer(this.stack, authorizerName, {
             cognitoUserPools: [this.userPool],
-            authorizerName: 'SpaceUserAuthorizer',
+            authorizerName: authorizerName,
             identitySource: 'method.request.header.Authorization'
         });
-        this.authorizer._attachToApi(this.api);
     }
 
-    private initializeIdentityPoolWrapper(){
+    private createIdentityPoolWrapper() {
         this.identityPoolWrapper = new IdentityPoolWrapper(
-            this.scope,
+            this.stack,
             this.userPool,
             this.userPoolClient,
-            this.policies
+            this.buckets
         )
     }
 
-    private createAdminsGroup(){
-        new CfnUserPoolGroup(this.scope, 'admins', {
-            groupName: 'admins',
+    private createAdminGroup(): CfnUserPoolGroup {
+        const name = "admins";
+        const group = new CfnUserPoolGroup(this.stack, name, {
+            groupName: name,
             userPoolId: this.userPool.userPoolId,
             roleArn: this.identityPoolWrapper.adminRole.roleArn
-        })
+        });
+
+        return group;
     }
 }

@@ -1,115 +1,116 @@
-import { Stack } from 'aws-cdk-lib';
-import { AttributeType, Table } from 'aws-cdk-lib/lib/aws-dynamodb';
-import { NodejsFunction } from 'aws-cdk-lib/lib/aws-lambda-nodejs';
-import { LambdaIntegration } from 'aws-cdk-lib/lib/aws-apigateway';
-import { join } from 'path'
+import { Stack } from "aws-cdk-lib";
+import { AuthorizationType, CognitoUserPoolsAuthorizer, Cors, LambdaIntegration, Resource, RestApi } from "aws-cdk-lib/lib/aws-apigateway";
+import { AttributeType, Table } from "aws-cdk-lib/lib/aws-dynamodb";
+import { NodejsFunction } from "aws-cdk-lib/lib/aws-lambda-nodejs";
 
-export interface TableProps {
-    tableName: string,
-    primaryKey: string,
-    createLambdaPath?: string,
-    readLambdaPath?: string,
-    updateLambdaPath?: string,
-    deleteLambdaPath?: string,
-    secondaryIndexes?: string[]
+import { join } from "path";
+import { existsSync } from "fs";
+
+export interface GenericTableProps {
+    tableName: string;
+    resourceName: string;
+    primaryKey: string;
+    secondaryIndices?: string[];
+};
+
+interface TableMethodProps {
+    httpMethod: string;
+    name: string;
 }
 
 export class GenericTable {
-
     private stack: Stack;
+    private api: RestApi;
+    private authorizer: CognitoUserPoolsAuthorizer;
+    private props: GenericTableProps;
+
     private table: Table;
-    private props: TableProps
+    private resource: Resource;
 
-    private createLambda: NodejsFunction | undefined;
-    private readLambda: NodejsFunction | undefined;
-    private updateLambda: NodejsFunction | undefined;
-    private deleteLambda: NodejsFunction | undefined;
-
-    public createLambdaIntegration: LambdaIntegration;
-    public readLambdaIntegration: LambdaIntegration;
-    public updateLambdaIntegration: LambdaIntegration;
-    public deleteLambdaIntegration: LambdaIntegration;
-
-    public constructor(stack: Stack, props: TableProps){
+    public constructor(stack: Stack, api: RestApi, authorizer: CognitoUserPoolsAuthorizer, props: GenericTableProps) {
         this.stack = stack;
+        this.api = api;
+        this.authorizer = authorizer;
         this.props = props
-        this.initialize();        
+
+        this.createTable();
+        this.createSecondaryIndices();
+        this.createTableResource();
+        this.createTableLambdas();
     }
 
-    private initialize(){
-        this.createTable();
-        this.addSecondaryIndexes();
-        this.createLambdas();
-        this.grantTableRights();
-    }
-    private createTable(){
+    private createTable() {
         this.table = new Table(this.stack, this.props.tableName, {
             partitionKey: {
                 name: this.props.primaryKey,
                 type: AttributeType.STRING
             },
             tableName: this.props.tableName
-        })
+        });
     }
-    private addSecondaryIndexes(){
-        if (this.props.secondaryIndexes) {
-            for (const secondaryIndex of this.props.secondaryIndexes) {
+
+    private createSecondaryIndices() {
+        if (this.props.secondaryIndices) {
+            for (const index of this.props.secondaryIndices) {
                 this.table.addGlobalSecondaryIndex({
-                    indexName: secondaryIndex,
+                    indexName: index,
                     partitionKey: {
-                        name: secondaryIndex,
+                        name: index,
                         type: AttributeType.STRING
                     }
-                })
+                });
             }
         }
     }
-    private createLambdas(){
-        if (this.props.createLambdaPath) {
-            this.createLambda = this.createSingleLambda(this.props.createLambdaPath)
-            this.createLambdaIntegration = new LambdaIntegration(this.createLambda);
-        }
-        if (this.props.readLambdaPath) {
-            this.readLambda = this.createSingleLambda(this.props.readLambdaPath)
-            this.readLambdaIntegration = new LambdaIntegration(this.readLambda);
-        }
-        if (this.props.updateLambdaPath) {
-            this.updateLambda = this.createSingleLambda(this.props.updateLambdaPath)
-            this.updateLambdaIntegration = new LambdaIntegration(this.updateLambda);
-        }
-        if (this.props.deleteLambdaPath) {
-            this.deleteLambda = this.createSingleLambda(this.props.deleteLambdaPath);
-            this.deleteLambdaIntegration = new LambdaIntegration(this.deleteLambda);
-        }
+
+    private createTableResource() {
+        this.resource = this.api.root.addResource(this.props.resourceName, {
+            defaultCorsPreflightOptions : {
+                allowOrigins: Cors.ALL_ORIGINS,
+                allowMethods: Cors.ALL_METHODS
+            }
+        });
     }
 
-    private grantTableRights(){
-        if(this.createLambda){
-            this.table.grantWriteData(this.createLambda);
-        }
-        if(this.readLambda){
-            this.table.grantReadData(this.readLambda)
-        }
-        if(this.updateLambda){
-            this.table.grantWriteData(this.updateLambda)
-        }
-        if(this.deleteLambda){
-            this.table.grantWriteData(this.deleteLambda)
-        }
+    private createTableLambdas() {
+        const methodProps: TableMethodProps[] = [
+            { httpMethod: "POST", name: "Create" },
+            { httpMethod: "GET", name: "Read" },
+            { httpMethod: "PUT", name: "Update" },
+            { httpMethod: "DELETE", name: "Delete" }
+        ];
+
+        methodProps.forEach(({ httpMethod, name }) => {
+            const path = join(__dirname, "..", "services", this.props.tableName, `${name}.ts`);
+            if (existsSync(path)) {
+                const lambda = this.createLambda(name, path);
+
+                if (["POST", "PUT", "DELETE"].includes(httpMethod)) {
+                    this.table.grantWriteData(lambda);
+                } else if (["GET"].includes(httpMethod)) {
+                    this.table.grantReadData(lambda);
+                }
+    
+                this.resource.addMethod(httpMethod, new LambdaIntegration(lambda), {
+                    authorizationType: AuthorizationType.COGNITO,
+                    authorizer: {
+                        authorizerId: this.authorizer.authorizerId
+                    }
+                });
+            }
+        });
     }
 
-
-    private createSingleLambda(lambdaName: string): NodejsFunction{
-        const lambdaId = `${this.props.tableName}-${lambdaName}`  
-        return new NodejsFunction(this.stack, lambdaId, {
-            entry: (join(__dirname, '..', 'services', this.props.tableName, `${lambdaName}.ts`)),
-            handler: 'handler',
-            functionName: lambdaId,
+    private createLambda(name: string, path: string): NodejsFunction {
+        const id = `${this.props.tableName}-${name}`;
+        return new NodejsFunction(this.stack, id, {
+            entry: path,
+            handler: "handler",
+            functionName: id,
             environment: {
                 TABLE_NAME: this.props.tableName,
                 PRIMARY_KEY: this.props.primaryKey
             }
-        })
+        });
     }
-
 }
